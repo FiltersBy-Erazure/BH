@@ -20,6 +20,8 @@ Drawing::StatsDisplay* BH::statsDisplay;
 bool BH::initialized;
 bool BH::cGuardLoaded;
 WNDPROC BH::OldWNDPROC;
+
+MonstersRemainingState g_monstersRemaining;
 BHApp App;
 
 Patch* patches[] = {
@@ -455,6 +457,12 @@ extern "C" {
 			return selectedUnit;
 		}
 		return NULL;
+	}
+
+	__declspec(dllexport) void __stdcall BHSetMonstersRemaining(int nActive, int nCount)
+	{
+		g_monstersRemaining.active = nActive;
+		g_monstersRemaining.count = nCount;
 	}
 
 #ifdef __cplusplus

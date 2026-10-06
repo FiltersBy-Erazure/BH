@@ -196,6 +196,14 @@ struct BHApp
 
 extern BHApp App;
 
+struct MonstersRemainingState
+{
+	int active = 0;		// 1 = display, 0 = hide
+	int count = 0;		// hostile alive monster count
+	DWORD tick = 1;		// GetTickCount() of last received active packet (staleness check)
+};
+extern MonstersRemainingState g_monstersRemaining;
+
 typedef enum BHConfigId
 {
 	BH_CONFIG_EXPERIENCEMETER,
