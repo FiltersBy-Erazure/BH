@@ -2211,6 +2211,7 @@ __declspec(dllexport) void __stdcall BHOnPropertyBuild(wchar_t* wOut, int nStat,
 	}
 
 	if (!(App.lootfilter.alwaysShowStatRanges.value ||
+		(pItem->pItemData && pItem->pItemData->dwFlags & ITEMFLAG_FAKE_COMPENDIUM_TAB) ||
 		GetKeyState(App.lootfilter.showStatRangesPrimary.value) & 0x8000 ||
 		GetKeyState(App.lootfilter.showStatRangesSecondary.value) & 0x8000) ||
 		pItem == nullptr || pItem->dwType != UNIT_ITEM)
@@ -2261,6 +2262,136 @@ __declspec(dllexport) void __stdcall BHOnPropertyBuild(wchar_t* wOut, int nStat,
 			if (all_stat != nullptr) {
 				statMin += all_stat->dwMin;
 				statMax += all_stat->dwMax;
+			}
+
+			// For fake compendium items, replace the rolled value with the range
+			if ((pItem->pItemData->dwFlags & ITEMFLAG_FAKE_COMPENDIUM_TAB) &&
+				(statMin < statMax || max_elem_stat != nullptr))
+			{
+				DWORD nRolledValue = D2COMMON_GetUnitStat(pItem, nStat, nStatParam);
+
+				// Some stats need adjustment to match the displayed value
+				if (nStat == STAT_MAXHP || nStat == STAT_MAXMANA)
+				{
+					nRolledValue /= 256;
+				}
+				else if (nStat == STAT_ENHANCEDDEFENSE ||
+					nStat == STAT_ENHANCEDMAXIMUMDAMAGE || nStat == STAT_ENHANCEDMINIMUMDAMAGE ||
+					nStat == STAT_MINIMUMDAMAGE || nStat == STAT_MAXIMUMDAMAGE ||
+					nStat == STAT_SECONDARYMINIMUMDAMAGE || nStat == STAT_SECONDARYMAXIMUMDAMAGE ||
+					nStat == STAT_MINIMUMTHROWINGDAMAGE || nStat == STAT_MAXIMUMTHROWINGDAMAGE)
+				{
+					StatList* pStatList = D2COMMON_GetStatList(pItem, NULL, 0x40);
+					if (pStatList)
+					{
+						nRolledValue = D2COMMON_GetStatValueFromStatList(pStatList, nStat, 0);
+					}
+				}
+
+				wchar_t szRolledValue[20];
+				swprintf_s(szRolledValue, L"%d", nRolledValue);
+
+				wchar_t* pFound = wcsstr(wOut, szRolledValue);
+				if (pFound)
+				{
+					wchar_t szTemp[256] = {};
+					int prefixLen = (int)(pFound - wOut);
+					int numLen = (int)wcslen(szRolledValue);
+
+					wcsncpy_s(szTemp, wOut, prefixLen);
+
+					if (nStat >= STAT_DEFENSEPERLEVEL && nStat <= STAT_FINDGEMSPERLEVEL)
+					{
+						double fStatMin = statMin / 8.0;
+						double fStatMax = statMax / 8.0;
+						wchar_t fStatMinStr[20];
+						wchar_t fStatMaxStr[20];
+						swprintf_s(fStatMinStr, L"%.20g", fStatMin);
+						swprintf_s(fStatMaxStr, L"%.20g", fStatMax);
+						FixDecimalString(fStatMinStr, 3);
+						FixDecimalString(fStatMaxStr, 3);
+						swprintf_s(szTemp + prefixLen, 256 - prefixLen,
+							L"%s[%s - %s]%s",
+							GetColorCode(TextColor::DarkGreen).c_str(),
+							fStatMinStr, fStatMaxStr,
+							GetColorCode(statColor).c_str());
+						wcscat_s(szTemp, 256, pFound + numLen);
+					}
+					else if (max_elem_stat == nullptr)
+					{
+						swprintf_s(szTemp + prefixLen, 256 - prefixLen,
+							L"%s[%d - %d]%s",
+							GetColorCode(TextColor::DarkGreen).c_str(),
+							statMin, statMax,
+							GetColorCode(statColor).c_str());
+						wcscat_s(szTemp, 256, pFound + numLen);
+					}
+					else
+					{
+						int maxStatMin = max_elem_stat->dwMin;
+						int maxStatMax = max_elem_stat->dwMax;
+
+						DWORD nMaxRolledValue = 0;
+						StatList* pMaxStatList = D2COMMON_GetStatList(pItem, NULL, 0x40);
+						if (pMaxStatList)
+						{
+							DWORD nMaxStatId = 0;
+							if (nStat == STAT_MINIMUMFIREDAMAGE) nMaxStatId = STAT_MAXIMUMFIREDAMAGE;
+							else if (nStat == STAT_MINIMUMCOLDDAMAGE) nMaxStatId = STAT_MAXIMUMCOLDDAMAGE;
+							else if (nStat == STAT_MINIMUMLIGHTNINGDAMAGE) nMaxStatId = STAT_MAXIMUMLIGHTNINGDAMAGE;
+							else if (nStat == STAT_MINIMUMPOISONDAMAGE) nMaxStatId = STAT_MAXIMUMPOISONDAMAGE;
+							else if (nStat == STAT_MINIMUMMAGICALDAMAGE) nMaxStatId = STAT_MAXIMUMMAGICALDAMAGE;
+							else if (nStat == STAT_MINIMUMDAMAGE) nMaxStatId = STAT_MAXIMUMDAMAGE;
+							else if (nStat == STAT_SECONDARYMINIMUMDAMAGE) nMaxStatId = STAT_SECONDARYMAXIMUMDAMAGE;
+
+							if (nMaxStatId != 0)
+							{
+								nMaxRolledValue = D2COMMON_GetStatValueFromStatList(pMaxStatList, nMaxStatId, 0);
+							}
+						}
+
+						wchar_t szMaxRolledValue[20];
+						swprintf_s(szMaxRolledValue, L"%d", nMaxRolledValue);
+
+						wchar_t* pMaxFound = wcsstr(wOut, szMaxRolledValue);
+						int suffixStart = (pMaxFound && pMaxFound > pFound)
+							? (int)(pMaxFound - wOut) + (int)wcslen(szMaxRolledValue)
+							: prefixLen + numLen;
+
+						if (statMin < statMax && maxStatMin < maxStatMax)
+						{
+							swprintf_s(szTemp + prefixLen, 256 - prefixLen,
+								L"%s[%d - %d to %d - %d]%s",
+								GetColorCode(TextColor::DarkGreen).c_str(),
+								statMin, statMax, maxStatMin, maxStatMax,
+								GetColorCode(statColor).c_str());
+						}
+						else if (statMin < statMax)
+						{
+							swprintf_s(szTemp + prefixLen, 256 - prefixLen,
+								L"%s[%d - %d]%s",
+								GetColorCode(TextColor::DarkGreen).c_str(),
+								statMin, statMax,
+								GetColorCode(statColor).c_str());
+						}
+						else
+						{
+							swprintf_s(szTemp + prefixLen, 256 - prefixLen,
+								L"%s[%d to %d - %d]%s",
+								GetColorCode(TextColor::DarkGreen).c_str(),
+								statMin, maxStatMin, maxStatMax,
+								GetColorCode(statColor).c_str());
+						}
+
+						if (suffixStart < (int)wcslen(wOut))
+						{
+							wcscat_s(szTemp, 256, wOut + suffixStart);
+						}
+					}
+
+					wcscpy_s(wOut, 256, szTemp);
+				}
+				break;
 			}
 
 			if (statMin < statMax || max_elem_stat != nullptr) {
