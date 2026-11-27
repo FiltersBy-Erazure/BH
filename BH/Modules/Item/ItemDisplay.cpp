@@ -3298,6 +3298,25 @@ void RegisterFormula(const std::wstring& ref, std::unique_ptr<Formula<FormulaCon
 	FormulaReplacementMap.insert_or_assign(ref, ReplacementSpec{ 0, ReplacementSpec::ReplaceBindFormula(formulaMap.find(ref)->second) });
 }
 
+// An alias as InitializeItemRules writes it into the rules: its name (replaced in conditions), %NAME% in upper case
+// (replaced in outputs) and its text.
+struct AliasKeys
+{
+	wstring name;
+	wstring outputKey;
+	wstring value;
+};
+
+// Every occurrence of key replaced by value, searching again from the start after each replacement (so a replacement
+// that writes the key again is replaced again, as InitializeItemRules has always done).
+static void ReplaceEvery(wstring& text, const wstring& key, const wstring& value)
+{
+	for (size_t pos = text.find(key); pos != wstring::npos; pos = text.find(key))
+	{
+		text.replace(pos, key.length(), value);
+	}
+}
+
 struct IslandReplacementHelper
 {
 	const wstring IslandIdentifier = L"$f(";
@@ -3442,21 +3461,27 @@ namespace ItemDisplay
 			RegisterFormula(formulaRef, out);
 		}
 
+		// Each alias's two keys, built once: its name (conditions) and %NAME% in upper case (outputs). Copying the alias
+		// and building %NAME% for every rule made several heap allocations per rule and alias, millions in a load.
+		vector<AliasKeys> aliasKeys;
+		aliasKeys.reserve(aliases.size());
+		for (const auto& alias : aliases)
+		{
+			if (alias.first.empty())
+				continue;
+			wstring upper(alias.first);
+			transform(upper.begin(), upper.end(), upper.begin(), [](wchar_t c) { return (c >= L'a' && c <= L'z') ? (c - 32) : c; });
+			aliasKeys.push_back({ alias.first, L"%" + upper + L"%", alias.second });
+		}
+
 		std::wstring percent = L"%";
 		std::wstring empty = L"";
 		for (unsigned int i = 0; i < rules.size(); i++)
 		{
-			for (auto alias : aliases)
+			for (const auto& alias : aliasKeys)
 			{
-				if (alias.first.empty())
-					continue;
-
-				while (rules[i].first.find(alias.first) != wstring::npos)
-					rules[i].first.replace(rules[i].first.find(alias.first), alias.first.length(), alias.second);
-
-				transform(alias.first.begin(), alias.first.end(), alias.first.begin(), [](wchar_t c) { return (c >= L'a' && c <= L'z') ? (c - 32) : c; });
-				while (rules[i].second.find(L"%" + alias.first + L"%") != wstring::npos)
-					rules[i].second.replace(rules[i].second.find(L"%" + alias.first + L"%"), alias.first.length() + 2, alias.second);
+				ReplaceEvery(rules[i].first, alias.name, alias.value);
+				ReplaceEvery(rules[i].second, alias.outputKey, alias.value);
 			}
 
 			// find inline formula islands
@@ -3651,7 +3676,8 @@ void BuildAction(wstring* str,
 	//// for some reason \w wasn't catching _, so I added it to the groups
 	try
 	{
-		std::wregex replace_reg(
+		// compiled once: BuildAction runs for every rule of the filter
+		static const std::wregex replace_reg(
 			LR"(^(?:(?:%[^%]*%)|[^%])*%((?:\w|_|-)*?[a-z]+?(?:\w|_|-)*?)%)",
 			std::regex_constants::ECMAScript);
 		std::wsmatch replace_match;
@@ -3715,9 +3741,23 @@ void BuildAction(wstring* str,
 	}
 }
 
+// The pattern %KEY<tail> (case-insensitive), compiled once per key: BuildAction looks for eight keywords in every
+// rule, and a std::wregex built for each search took most of a filter's load time.
+static const std::wregex& KeywordPattern(std::unordered_map<wstring, std::wregex>& compiled, const wstring& key_string,
+	const wchar_t* tail)
+{
+	auto it = compiled.find(key_string);
+	if (it == compiled.end())
+	{
+		it = compiled.emplace(key_string, std::wregex(L"%" + key_string + tail,
+			std::regex_constants::ECMAScript | std::regex_constants::icase)).first;
+	}
+	return it->second;
+}
+
 int ParsePingLevel(Action* act, const wstring& key_string) {
-	std::wregex pattern(L"%" + key_string + L"-([0-9])%",
-		std::regex_constants::ECMAScript | std::regex_constants::icase);
+	static std::unordered_map<wstring, std::wregex> compiled;
+	const std::wregex& pattern = KeywordPattern(compiled, key_string, L"-([0-9])%");
 	int ping_level = -1;
 	std::wsmatch the_match;
 
@@ -3734,8 +3774,8 @@ int ParsePingLevel(Action* act, const wstring& key_string) {
 // Returns an int ranging from 0 to the MAX_SOUND_ID.
 // If the parsed soundID is not found in that range, this will return a 0.
 int ParseSoundID(Action* act, const wstring& key_string) {
-	std::wregex pattern(L"%" + key_string + L"-([0-9]{1,4})%",
-		std::regex_constants::ECMAScript | std::regex_constants::icase);
+	static std::unordered_map<wstring, std::wregex> compiled;
+	const std::wregex& pattern = KeywordPattern(compiled, key_string, L"-([0-9]{1,4})%");
 	// Default soundID should be 0 incase this is played.
 	// 0 is none.wav
 	int soundID = 0;
@@ -3772,8 +3812,8 @@ wstring ParseDescription(Action* act)
 int ParseMapColor(Action* act,
 	const wstring& key_string)
 {
-	std::wregex pattern(L"%" + key_string + L"-([a-f0-9]{1,4})%",
-		std::regex_constants::ECMAScript | std::regex_constants::icase);
+	static std::unordered_map<wstring, std::wregex> compiled;
+	const std::wregex& pattern = KeywordPattern(compiled, key_string, L"-([a-f0-9]{1,4})%");
 	int         color = UNDEFINED_COLOR;
 	std::wsmatch the_match;
 
@@ -3856,6 +3896,44 @@ void Condition::ProcessConditions(vector<Condition*>& inputConditions,
 	}
 }
 
+// A number in a condition word, read as wstringstream >> int reads it: an optional sign, then the decimal digits
+// there are; false with no digit or past int's range. A word holds no white space (the rule's condition is cut into
+// words at it), so there is none to skip. Building a wstringstream for this took heap allocations for every word of
+// every rule.
+static bool ReadConditionNumber(const wstring& text, int& out)
+{
+	size_t i = 0;
+	bool negative = false;
+	if (i < text.length() && (text[i] == L'+' || text[i] == L'-'))
+	{
+		negative = text[i] == L'-';
+		i++;
+	}
+	if (i >= text.length() || text[i] < L'0' || text[i] > L'9')
+	{
+		return false;
+	}
+	long long number = 0;
+	for (; i < text.length() && text[i] >= L'0' && text[i] <= L'9'; i++)
+	{
+		number = number * 10 + (text[i] - L'0');
+		if (number > 2147483648LL)
+		{
+			return false;
+		}
+	}
+	if (negative)
+	{
+		number = -number;
+	}
+	if (number > INT_MAX || number < INT_MIN)
+	{
+		return false;
+	}
+	out = (int)number;
+	return true;
+}
+
 void Condition::BuildConditions(vector<Condition*>& conditions,
 	wstring              token)
 {
@@ -3901,17 +3979,14 @@ void Condition::BuildConditions(vector<Condition*>& conditions,
 			if (delim == L"~" && valueStr.find(L"-") != wstring::npos)
 			{
 				auto rangeDelim = valueStr.find(L"-");
-				wstringstream ss1(valueStr.substr(0, rangeDelim));
-				valueStr.erase(0, rangeDelim + 1);
-				wstringstream ss2(valueStr);
-				if ((ss1 >> value).fail() || (ss2 >> value2).fail())
+				if (!ReadConditionNumber(valueStr.substr(0, rangeDelim), value) ||
+					!ReadConditionNumber(valueStr.substr(rangeDelim + 1), value2))
 				{
 					return; // TODO: returning errors
 				}
 			}
 			else {
-				wstringstream ss(valueStr);
-				if ((ss >> value).fail())
+				if (!ReadConditionNumber(valueStr, value))
 				{
 					return; // TODO: returning errors
 				}
@@ -3922,9 +3997,10 @@ void Condition::BuildConditions(vector<Condition*>& conditions,
 
 	BYTE operation = GetOperation(&delim);
 	unsigned int keylen = key.length();
-	wstringstream number_ss(L"");
+	wstring number_str;  // the number after a prefix (SK, OS, CHSK, CLSK, TABSK, STAT, CHARSTAT)
 	int cond_num = -1;
-	std::wregex multi_reg(L"([0-9]{1,10}),([0-9]{1,10})", std::regex_constants::ECMAScript | std::regex_constants::icase);
+	// compiled once: BuildConditions runs for every word of every rule
+	static const std::wregex multi_reg(L"([0-9]{1,10}),([0-9]{1,10})", std::regex_constants::ECMAScript | std::regex_constants::icase);
 	std::wsmatch multi_match;
 
 	FilterCondition condition = COND_NULL;
@@ -3943,37 +4019,37 @@ void Condition::BuildConditions(vector<Condition*>& conditions,
 	else if (key.compare(0, 2, L"SK") == 0)
 	{
 		condition = COND_SK;
-		number_ss = wstringstream(key.substr(2));
+		number_str = key.substr(2);
 	}
 	else if (key.compare(0, 2, L"OS") == 0)
 	{
 		condition = COND_OS;
-		number_ss = wstringstream(key.substr(2));
+		number_str = key.substr(2);
 	}
 	else if (key.compare(0, 4, L"CHSK") == 0)
 	{
 		condition = COND_CHSK;
-		number_ss = wstringstream(key.substr(4));
+		number_str = key.substr(4);
 	}
 	else if (key.compare(0, 4, L"CLSK") == 0)
 	{
 		condition = COND_CLSK;
-		number_ss = wstringstream(key.substr(4));
+		number_str = key.substr(4);
 	}
 	else if (key.compare(0, 5, L"TABSK") == 0)
 	{
 		condition = COND_TABSK;
-		number_ss = wstringstream(key.substr(5));
+		number_str = key.substr(5);
 	}
 	else if (key.compare(0, 4, L"STAT") == 0)
 	{
 		condition = COND_STAT;
-		number_ss = wstringstream(key.substr(4));
+		number_str = key.substr(4);
 	}
 	else if (key.compare(0, 8, L"CHARSTAT") == 0)
 	{
 		condition = COND_CHARSTAT;
-		number_ss = wstringstream(key.substr(8));
+		number_str = key.substr(8);
 	}
 	else if (key.compare(0, 5, L"MULTI") == 0)
 	{
@@ -4386,35 +4462,35 @@ void Condition::BuildConditions(vector<Condition*>& conditions,
 		Condition::AddOperand(conditions, new ItemGroupCondition(ITEM_GROUP_ALLWEAPON, ITEMFLAG_WEAPON));
 		break;
 	case COND_SK:
-		if ((number_ss >> cond_num).fail() || cond_num < 0 || cond_num >(int)SKILL_MAX) { break; }
+		if (!ReadConditionNumber(number_str, cond_num) || cond_num < 0 || cond_num >(int)SKILL_MAX) { break; }
 		Condition::AddOperand(conditions, new ItemStatCondition(STAT_SINGLESKILL, cond_num, operation, value, value2));
 		break;
 	case COND_OS:
-		if ((number_ss >> cond_num).fail() || cond_num < 0 || cond_num >(int)SKILL_MAX) { break; }
+		if (!ReadConditionNumber(number_str, cond_num) || cond_num < 0 || cond_num >(int)SKILL_MAX) { break; }
 		Condition::AddOperand(conditions, new ItemStatCondition(STAT_NONCLASSSKILL, cond_num, operation, value, value2));
 		break;
 	case COND_CHSK:
 		// skills granted by charges
-		if ((number_ss >> cond_num).fail() || cond_num < 0 || cond_num >(int)SKILL_MAX) { break; }
+		if (!ReadConditionNumber(number_str, cond_num) || cond_num < 0 || cond_num >(int)SKILL_MAX) { break; }
 		Condition::AddOperand(conditions, new ChargedCondition(operation, cond_num, value, value2));
 		break;
 	case COND_CLSK:
-		if ((number_ss >> cond_num).fail() || cond_num < 0 || cond_num >= CLASS_NA) { break; }
+		if (!ReadConditionNumber(number_str, cond_num) || cond_num < 0 || cond_num >= CLASS_NA) { break; }
 		Condition::AddOperand(conditions, new ItemStatCondition(STAT_CLASSSKILLS, cond_num, operation, value, value2));
 		break;
 	case COND_ALLSK:
 		Condition::AddOperand(conditions, new ItemStatCondition(STAT_ALLSKILLS, 0, operation, value, value2));
 		break;
 	case COND_TABSK:
-		if ((number_ss >> cond_num).fail() || cond_num < 0 || cond_num > SKILLTAB_MAX) { break; }
+		if (!ReadConditionNumber(number_str, cond_num) || cond_num < 0 || cond_num > SKILLTAB_MAX) { break; }
 		Condition::AddOperand(conditions, new ItemStatCondition(STAT_SKILLTAB, cond_num, operation, value, value2));
 		break;
 	case COND_STAT:
-		if ((number_ss >> cond_num).fail() || cond_num < 0 || cond_num >(int)STAT_MAX) { break; }
+		if (!ReadConditionNumber(number_str, cond_num) || cond_num < 0 || cond_num >(int)STAT_MAX) { break; }
 		Condition::AddOperand(conditions, new ItemStatCondition(cond_num, 0, operation, value, value2));
 		break;
 	case COND_CHARSTAT:
-		if ((number_ss >> cond_num).fail() || cond_num < 0 || cond_num >(int)STAT_MAX) { break; }
+		if (!ReadConditionNumber(number_str, cond_num) || cond_num < 0 || cond_num >(int)STAT_MAX) { break; }
 		Condition::AddOperand(conditions, new CharStatCondition(cond_num, 0, operation, value, value2));
 		break;
 	case COND_MULTI:
