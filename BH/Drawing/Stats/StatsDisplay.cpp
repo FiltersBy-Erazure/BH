@@ -1096,6 +1096,25 @@ void StatsDisplay::GetIASBreakpointString(UnitAny* pUnit,
 		if (nSkillId == 151 || nSkillId == 380 || nSkillId == 425)
 		{
 			int WWNextHitDelay = pRightSkill->pSkillInfo->dwParam3;
+			// A monster's Whirlwind (the Act 5 mercenary's MonWhirlwind, Param3 1) is paced by its spin instead: the game
+			// plays the sequence a step a frame and puts it back to its first step at each hit, so a hit every hit-step
+			// frames (seq_ancientwhirlwind: its event on step 3)
+			if (pUnit->dwType == UNIT_MONSTER)
+			{
+				int nSeqNum = D2COMMON_10030_SKILLS_GetSeqNumFromSkill(pUnit, pRightSkill);
+				SequenceInfo* pMonSeqInfo = D2COMMON_10194_DATATBLS_GetMonSeqTableRecord(nSeqNum);
+				if (pMonSeqInfo && pMonSeqInfo->pSeqData)
+				{
+					for (int i = 0; i < pMonSeqInfo->nFrameCount; i++)
+					{
+						if (pMonSeqInfo->pSeqData[i].bEvent)
+						{
+							if (i > WWNextHitDelay) WWNextHitDelay = i;
+							break;
+						}
+					}
+				}
+			}
 			if (D2COMMON_UnitCanDualWield(pUnit))
 			{
 				Inventory* pInventory = pUnit->pInventory;
