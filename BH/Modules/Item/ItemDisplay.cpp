@@ -2901,7 +2901,16 @@ string ItemNameLookupCache::to_str(const wstring& name)
 vector<Action> MapActionLookupCache::make_cached_T(UnitItemInfo* uInfo)
 {
 	vector<Action> actions;
-	for (vector<Rule*>::const_iterator it = RuleList.begin(); it != RuleList.end(); it++) { if ((*it)->Evaluate(uInfo)) { actions.push_back((*it)->action); } }
+	for (vector<Rule*>::const_iterator it = RuleList.begin(); it != RuleList.end(); it++)
+	{
+		if ((*it)->Evaluate(uInfo))
+		{
+			actions.push_back((*it)->action);
+			// MapNotify::OnAutomapDraw draws the actions up to the first one that stops: the rules after it are never
+			// drawn, so they aren't run either
+			if ((*it)->action.stopProcessing) { break; }
+		}
+	}
 	return actions;
 }
 

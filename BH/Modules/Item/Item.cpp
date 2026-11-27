@@ -813,6 +813,16 @@ void Item::OnLoop() {
 		localFilterLevel = App.lootfilter.filterLevel.uValue;
 	}
 
+	// The caches keep an item's name by its flags alone, so a rule with CLVL would keep showing an item named before a
+	// level up as it was: reset them when the character's level changes too.
+	static int localCharLevel = -1;
+	UnitAny* pPlayer = D2CLIENT_GetPlayerUnit();
+	int charLevel = pPlayer ? (int)D2COMMON_GetUnitStat(pPlayer, STAT_LEVEL, 0) : -1;
+	if (localCharLevel != charLevel) {
+		ResetCaches();
+		localCharLevel = charLevel;
+	}
+
 	if (!D2CLIENT_GetUIState(0x01))
 		viewingUnit = NULL;
 

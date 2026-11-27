@@ -11,6 +11,11 @@ struct Rule;
 #include <utility>
 #include "lrucache.hpp"
 
+// How many items each cache keeps. The game asks for the names of the item labels it draws, frame after frame: an LRU
+// cache read in turn by more items than it holds misses every time, so with more labels than this (a big pile of drops
+// with Alt held) every label ran every rule of the filter again in every frame. Leave room for all of them at once.
+static const size_t RULE_CACHE_SIZE = 1000;
+
 template <typename T, typename... Args>
 class RuleLookupCache {
 	std::unique_ptr<cache::lru_cache<DWORD, std::pair<DWORDLONG, T>>> cache;
@@ -25,11 +30,11 @@ protected:
 
 public:
 	RuleLookupCache(const std::vector<Rule*>& rule_list)
-		: RuleList(rule_list), cache(new cache::lru_cache<DWORD, std::pair<DWORDLONG, T>>(100)) {}
+		: RuleList(rule_list), cache(new cache::lru_cache<DWORD, std::pair<DWORDLONG, T>>(RULE_CACHE_SIZE)) {}
 
 	void ResetCache() {
 		//PrintText(1, "Reseting LRU cache.");
-		cache.reset(new cache::lru_cache<DWORD, std::pair<DWORDLONG, T>>(100));
+		cache.reset(new cache::lru_cache<DWORD, std::pair<DWORDLONG, T>>(RULE_CACHE_SIZE));
 	}
 
 	// TODO: UnitItemInfo should probably be const, but call to Evaluate needs non-const
