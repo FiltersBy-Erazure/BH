@@ -1148,6 +1148,11 @@ void StatsDisplay::GetIASBreakpointString(UnitAny* pUnit,
 		{
 			nAttackRateBonus = pRightSkill->pSkillInfo->dwParam4;
 		}
+		// Split throw
+		else if (nSkillId == 375 && pUnit->dwMode != PLAYER_MODE_THROW)
+		{
+			nAttackRateBonus = pRightSkill->pSkillInfo->dwParam4;
+		}
 
 		if (pRightSkill->mode == PLAYER_MODE_SEQUENCE)
 		{
@@ -1359,7 +1364,8 @@ void StatsDisplay::GetIASBreakpointString(UnitAny* pUnit,
 						}
 
 						int nMinAccrIAS = D2COMMON_GetFrameMinAccr_STUB(FRAMES_IAS, pUnit);
-						int nBaseIAS = D2COMMON_GetUnitStat(pUnit, STAT_ATTACKRATE, 0);
+						// Keep the skill's own attack rate bonus (Double Swing, Dragon Tail, Split Throw) when recalculating
+						int nBaseIAS = D2COMMON_GetUnitStat(pUnit, STAT_ATTACKRATE, 0) + nAttackRateBonus;
 
 						nAnimAcceleration = nBaseIAS + nMinAccrIAS;
 						nMinAnimAcceleration = nBaseIAS;
@@ -1380,12 +1386,17 @@ void StatsDisplay::GetIASBreakpointString(UnitAny* pUnit,
 		pUnit->dwMode = nOldMode;
 
 		if (nMinAnimAcceleration > nMaxAnimAcceleration) nMinAnimAcceleration = nMaxAnimAcceleration - 1;  // 174 so we go through the for loop once
+		// EIAS (120 * IAS / (120 + IAS)) stays under 120: anything faster can't be reached, and the IAS formula below
+		// would divide by zero at 120 and go negative past it (e.g. Berserk with a +20 WSM weapon, or heavy slows)
+		if (nMaxAnimAcceleration > nMinAnimAcceleration + 119) nMaxAnimAcceleration = nMinAnimAcceleration + 119;
 		if (nAnimAcceleration < 15) nAnimAcceleration = 15;
 		if (nAnimAcceleration > nMaxAnimAcceleration) nAnimAcceleration = nMaxAnimAcceleration;
 		if (nAnimSpeed == 0) nAnimSpeed = 256;
 
 		nMinAnimRate = ((nAnimSpeed * nMaxAnimAcceleration) / 100);
-		nMaxAnimRate = ((nAnimSpeed * nMinAnimAcceleration) / 100);
+		// The game never animates slower than 15 (chill, Decrepify and Holy Freeze can take the attack rate below it, even
+		// to 0 or less, which divided by zero)
+		nMaxAnimRate = ((nAnimSpeed * max(nMinAnimAcceleration, 15)) / 100);
 		nAnimRate = ((nAnimSpeed * nAnimAcceleration) / 100);
 
 		nMinFrames = ceil(((((double)nFrames - (double)nFrameBonus) * 256) / (double)nMinAnimRate)) - 1;
@@ -1416,7 +1427,7 @@ void StatsDisplay::GetIASBreakpointString(UnitAny* pUnit,
 		{
 			nBaseIAS = (double)i - (double)nMinAnimAcceleration;
 			nIASBP = ceil((120 * nBaseIAS) / (120 - nBaseIAS));
-			nAnimRate = (nAnimSpeed * i) / 100;
+			nAnimRate = (nAnimSpeed * max(i, 15)) / 100;
 
 			if (rollback_skills.find(nSkillId) != rollback_skills.end())
 			{
